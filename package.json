@@ -1,0 +1,12 @@
+{
+  "name": "molniy-kg-bot",
+  "version": "1.0.0",
+  "description": "MOLNIY KG Telegram Bot",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js"
+  },
+  "dependencies": {
+    "node-telegram-bot-api": "^0.66.0"
+  }
+}
