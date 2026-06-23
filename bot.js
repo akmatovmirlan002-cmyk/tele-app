@@ -16,7 +16,43 @@ const ADMIN_IDS = [
 ];
 // ======================================================
 
-const bot = new TelegramBot(TOKEN, { polling: true });
+// ===== ЗАЯВКАЛАР ЖИБЕРИЛЕ ТУРГАН ГРУППАНЫН ID'СИ ОШО ЖЕРГЕ КОЙ =====
+// Группанын ID'син билбесең: ботту группага кош, группада /myid жаз —
+// бот ошол группанын ID'син жазып берет (адатта минус менен баштайт, мис: -1001234567890).
+const GROUP_CHAT_ID = -1003819679345; // мисалы: -1001234567890
+// ====================================================================
+
+const bot = new TelegramBot(TOKEN, { polling: false });
+
+// Polling баштаганга чейин, бот өчүрүлүп турган маалда чогулган
+// эски (already-stale) кутулмаларды тазалайбыз — болбосо алар
+// кайра иштеткенде бир учурда "топон" болуп, query'лер "too old"
+// деген ката берет.
+bot.deleteWebHook({ drop_pending_updates: true })
+  .catch(() => {})
+  .finally(() => bot.startPolling());
+
+// Ботту токтоткондо polling'ди таза жабат, мунун аркасында
+// кайра иштетилгенде "Conflict: terminated by other getUpdates request"
+// катасы азаят.
+function shutdown() {
+  bot.stopPolling().finally(() => process.exit(0));
+}
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);
+
+// Бирдей callback_query экинчи жолу (мис. кош update же эски сессиядан)
+// келип калса, кайра иштетпей өткөрүп жиберет.
+const processedCallbackIds = new Set();
+function isDuplicateCallback(id) {
+  if (processedCallbackIds.has(id)) return true;
+  processedCallbackIds.add(id);
+  if (processedCallbackIds.size > 500) {
+    const first = processedCallbackIds.values().next().value;
+    processedCallbackIds.delete(first);
+  }
+  return false;
+}
 
 const BANKS_FILE = path.join(__dirname, 'banks.json');
 
@@ -56,6 +92,73 @@ function saveSeenUser(user) {
     users.push({ ...user, lastSeen: new Date().toISOString() });
   }
   fs.writeFileSync(SEEN_USERS_FILE, JSON.stringify(users, null, 2), 'utf8');
+}
+
+// ===================== БАНДАЛГАН КОЛДОНУУЧУЛАР =====================
+const BANNED_FILE = path.join(__dirname, 'banned_users.json');
+
+function loadBannedUsers() {
+  try {
+    return JSON.parse(fs.readFileSync(BANNED_FILE, 'utf8'));
+  } catch (e) {
+    return [];
+  }
+}
+
+function saveBannedUsers(ids) {
+  fs.writeFileSync(BANNED_FILE, JSON.stringify(ids, null, 2), 'utf8');
+}
+
+function isBanned(chatId) {
+  return loadBannedUsers().includes(chatId);
+}
+
+function banUser(chatId) {
+  const ids = loadBannedUsers();
+  if (!ids.includes(chatId)) {
+    ids.push(chatId);
+    saveBannedUsers(ids);
+  }
+}
+
+// ===================== ЖАЗЫЛБАГАН ЗАЯВКАЛАР (ОПЕРАТОР КАРАЙ ТУРГАН) =====================
+const pendingApplications = {};
+
+function makeApplicationId() {
+  return `${Date.now()}_${Math.floor(Math.random() * 10000)}`;
+}
+
+// ===================== КЛИЕНТТИН САКТАЛГАН ЭСЕП ID'ЛЕРИ =====================
+const USER_ACCOUNTS_FILE = path.join(__dirname, 'user_accounts.json');
+
+function loadUserAccounts() {
+  try {
+    return JSON.parse(fs.readFileSync(USER_ACCOUNTS_FILE, 'utf8'));
+  } catch (e) {
+    return {};
+  }
+}
+
+const MAX_SAVED_IDS = 3;
+
+function toIdArray(value) {
+  if (Array.isArray(value)) return value;
+  if (typeof value === 'string' && value) return [value];
+  return [];
+}
+
+function saveUserAccountId(chatId, site, accountId) {
+  const accounts = loadUserAccounts();
+  if (!accounts[chatId]) accounts[chatId] = {};
+  const ids = toIdArray(accounts[chatId][site]);
+  const updated = [accountId, ...ids.filter(id => id !== accountId)].slice(0, MAX_SAVED_IDS);
+  accounts[chatId][site] = updated;
+  fs.writeFileSync(USER_ACCOUNTS_FILE, JSON.stringify(accounts, null, 2), 'utf8');
+}
+
+function getSavedAccountIds(chatId, site) {
+  const accounts = loadUserAccounts();
+  return toIdArray(accounts[chatId] && accounts[chatId][site]);
 }
 
 // ===================== БАНК ЛИНК ҮЛГҰЛӗРИ =====================
@@ -105,6 +208,8 @@ function makeBankId(name) {
 // ===================== START =====================
 bot.onText(/\/start/, (msg) => {
   const chatId = msg.chat.id;
+  console.log(`[CMD] /start chat=${chatId}`);
+  if (isBanned(chatId)) return;
   userSessions[chatId] = {}; // сессияны тазала
 
   bot.sendMessage(chatId,
@@ -128,6 +233,7 @@ bot.onText(/\/start/, (msg) => {
 // ===================== MYID =====================
 bot.onText(/\/myid/, (msg) => {
   const chatId = msg.chat.id;
+  console.log(`[CMD] /myid chat=${chatId}`);
   saveSeenUser({
     id: chatId,
     firstName: msg.from.first_name || '',
@@ -140,6 +246,7 @@ bot.onText(/\/myid/, (msg) => {
 // ===================== PROFILE =====================
 bot.onText(/\/profile/, (msg) => {
   const chatId = msg.chat.id;
+  console.log(`[CMD] /profile chat=${chatId}`);
   const from = msg.from;
   saveSeenUser({
     id: chatId,
@@ -203,6 +310,12 @@ function askForId(chatId, site) {
   session.step = 'waiting_id';
 
   const siteLabel = site === '1xbet' ? '1XBET' : 'MTLBET';
+  const savedIds = getSavedAccountIds(chatId, site);
+
+  const rows = savedIds.map((id, i) => [{ text: `✅ ${id}`, callback_data: `use_saved_id_${i}` }]);
+  rows.push([{ text: '🔴 Отмена', callback_data: 'main_menu' }]);
+
+  const hint = savedIds.length ? `\n\n💡 Мурунку ID'лериңден тандай аласың:` : '';
 
   bot.sendPhoto(chatId,
     'https://i.imgur.com/placeholder_account.png', // фото жери — өз фотоңду кой
@@ -210,29 +323,22 @@ function askForId(chatId, site) {
       caption:
         `💳 <b>Пополнение счета</b>\n\n` +
         `Счет: <b>${siteLabel}</b>\n\n` +
-        `📝 Введите ID счета:`,
+        `📝 Введите ID счета:${hint}`,
       parse_mode: 'HTML',
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: '🔴 Отмена', callback_data: 'main_menu' }]
-        ]
-      }
+      reply_markup: { inline_keyboard: rows }
     }
-  ).catch(() => {
+  ).catch((err) => {
+    console.log('[ASK_FOR_ID_PHOTO_ERR]', err.message);
     // Эгер фото жок болсо, жөн текст жибер
     bot.sendMessage(chatId,
       `💳 <b>Пополнение счета</b>\n\n` +
       `Счет: <b>${siteLabel}</b>\n\n` +
-      `📝 Введите ID счета:`,
+      `📝 Введите ID счета:${hint}`,
       {
         parse_mode: 'HTML',
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: '🔴 Отмена', callback_data: 'main_menu' }]
-          ]
-        }
+        reply_markup: { inline_keyboard: rows }
       }
-    );
+    ).catch(err2 => console.log('[ASK_FOR_ID_TEXT_ERR]', err2.message));
   });
 }
 
@@ -293,10 +399,64 @@ function showBankMenu(chatId) {
   );
 }
 
-// ===================== ЗАЯВКА ОТПРАВЛЕНА =====================
-function showApplicationSent(chatId) {
+// ===================== ЗАЯВКАНЫ ГРУППАГА ЖИБЕРҦӦ =====================
+function sendApplicationToGroup(chatId, msg) {
+  if (!GROUP_CHAT_ID) return;
+
   const session = getSession(chatId);
   const siteLabel = session.site === '1xbet' ? '1XBET' : 'MELBET';
+  const from = msg.from;
+  const username = from.username ? `@${from.username}` : '—';
+
+  const appId = makeApplicationId();
+  pendingApplications[appId] = {
+    chatId,
+    amount: session.amount,
+    site: siteLabel,
+    userId: session.userId,
+    bank: session.bank || '—',
+    paymentStart: session.paymentStart,
+    status: 'new'
+  };
+
+  const caption =
+    `🆕 <b>Жаңы заявка</b>\n\n` +
+    `👤 Клиент: <b>${from.first_name || ''} ${from.last_name || ''}</b> (${username})\n` +
+    `🆔 Chat ID: <code>${chatId}</code>\n\n` +
+    `🎰 Сайт: <b>${siteLabel}</b>\n` +
+    `👤 Счет ID: <code>${session.userId}</code>\n` +
+    `💰 Сумма: <b>${session.amount} сом</b>\n` +
+    `🏦 Банк: <b>${session.bank || '—'}</b>`;
+
+  const buttons = {
+    inline_keyboard: [
+      [
+        { text: '⏳ Иштетүү', callback_data: `app_process_${appId}` },
+        { text: '✅ Бекитүү', callback_data: `app_approve_${appId}` }
+      ],
+      [
+        { text: '❌ Четке кагуу', callback_data: `app_cancel_${appId}` },
+        { text: '🚫 Бан', callback_data: `app_ban_${appId}` }
+      ]
+    ]
+  };
+
+  if (msg.photo) {
+    const fileId = msg.photo[msg.photo.length - 1].file_id;
+    bot.sendPhoto(GROUP_CHAT_ID, fileId, { caption, parse_mode: 'HTML', reply_markup: buttons });
+  } else if (msg.document) {
+    bot.sendDocument(GROUP_CHAT_ID, msg.document.file_id, { caption, parse_mode: 'HTML', reply_markup: buttons });
+  } else {
+    bot.sendMessage(GROUP_CHAT_ID, caption, { parse_mode: 'HTML', reply_markup: buttons });
+  }
+}
+
+// ===================== ЗАЯВКА ОТПРАВЛЕНА =====================
+function showApplicationSent(chatId, msg) {
+  const session = getSession(chatId);
+  const siteLabel = session.site === '1xbet' ? '1XBET' : 'MELBET';
+
+  sendApplicationToGroup(chatId, msg);
 
   bot.sendMessage(chatId,
     `✅ <b>Заявка отправлена!</b>\n\n` +
@@ -314,25 +474,17 @@ function showApplicationSent(chatId) {
       }
     }
   );
-
-  // Симуляция подтверждения оператором (5-10 секунд демо)
-  // Реалдуу ботто — оператор өзү тастыктайт
-  setTimeout(() => {
-    confirmPayment(chatId);
-  }, 8000); // 8 секунддан кийин авто-тастыктоо (ДЕМО ГАНА)
 }
 
 // ===================== БАЛАНС ПОПОЛНЕН =====================
-function confirmPayment(chatId) {
-  const session = getSession(chatId);
-  const siteLabel = session.site === '1xbet' ? '1XBET' : 'MELBET';
-  const elapsed = Math.round((Date.now() - session.paymentStart) / 1000);
+function confirmPayment(app) {
+  const elapsed = Math.round((Date.now() - (app.paymentStart || Date.now())) / 1000);
 
-  bot.sendMessage(chatId,
+  bot.sendMessage(app.chatId,
     `🎉 <b>Ваш баланс пополнен!</b>\n\n` +
-    `💰 Сумма: <b>${session.amount} сом</b>\n` +
-    `🎰 Счет: <b>${siteLabel}</b>\n` +
-    `👤 ID: <code>${session.userId}</code>\n` +
+    `💰 Сумма: <b>${app.amount} сом</b>\n` +
+    `🎰 Счет: <b>${app.site}</b>\n` +
+    `👤 ID: <code>${app.userId}</code>\n` +
     `⚡ Закрыто за: <b>${elapsed}с</b>`,
     {
       parse_mode: 'HTML',
@@ -475,8 +627,18 @@ bot.on('callback_query', (query) => {
   const chatId = query.message.chat.id;
   const data = query.data;
   const session = getSession(chatId);
+  const fromUser = query.from.username ? `@${query.from.username}` : query.from.id;
 
-  bot.answerCallbackQuery(query.id);
+  console.log(`[BUTTON] chat=${chatId} from=${fromUser} data="${data}" query_id=${query.id}`);
+
+  bot.answerCallbackQuery(query.id).catch((err) => {
+    console.log(`[ANSWER_CALLBACK_ERR] data="${data}" err=${err.message}`);
+  });
+
+  if (isDuplicateCallback(query.id)) {
+    console.log(`[BUTTON_DUPLICATE] data="${data}" query_id=${query.id}`);
+    return;
+  }
 
   if (data === 'noop') {
     return;
@@ -496,6 +658,16 @@ bot.on('callback_query', (query) => {
   }
   else if (data === 'site_melbet') {
     askForId(chatId, 'melbet');
+  }
+  else if (data.startsWith('use_saved_id_')) {
+    const index = parseInt(data.replace('use_saved_id_', ''));
+    const savedIds = getSavedAccountIds(chatId, session.site);
+    const savedId = savedIds[index];
+    if (!savedId) return;
+    session.userId = savedId;
+    session.step = null;
+    saveUserAccountId(chatId, session.site, savedId);
+    askForAmount(chatId);
   }
   else if (data.startsWith('amount_')) {
     const amount = data.replace('amount_', '');
@@ -547,11 +719,78 @@ bot.on('callback_query', (query) => {
     if (!isAdmin(chatId)) return;
     askDeleteConfirm(chatId, data.replace('admin_delete_', ''));
   }
+  // ===== ЗАЯВКА CALLBACK'ТАРЫ (ГРУППАДА) =====
+  else if (data.startsWith('app_process_')) {
+    if (!isAdmin(query.from.id)) return;
+    const appId = data.replace('app_process_', '');
+    const app = pendingApplications[appId];
+    if (!app) return;
+    app.status = 'processing';
+    bot.sendMessage(app.chatId, `⏳ <b>Сиздин арызыңыз оператор тарабынан каралып жатат...</b>`, { parse_mode: 'HTML' });
+    bot.editMessageReplyMarkup(
+      { inline_keyboard: [
+        [
+          { text: '⏳ Иштетилип жатат...', callback_data: 'noop' },
+          { text: '✅ Бекитүү', callback_data: `app_approve_${appId}` }
+        ],
+        [
+          { text: '❌ Четке кагуу', callback_data: `app_cancel_${appId}` },
+          { text: '🚫 Бан', callback_data: `app_ban_${appId}` }
+        ]
+      ] },
+      { chat_id: chatId, message_id: query.message.message_id }
+    ).catch(() => {});
+  }
+  else if (data.startsWith('app_approve_')) {
+    if (!isAdmin(query.from.id)) return;
+    const appId = data.replace('app_approve_', '');
+    const app = pendingApplications[appId];
+    if (!app) return;
+    app.status = 'approved';
+    confirmPayment(app);
+    bot.editMessageReplyMarkup(
+      { inline_keyboard: [[{ text: '✅ Бекитилди', callback_data: 'noop' }]] },
+      { chat_id: chatId, message_id: query.message.message_id }
+    ).catch(() => {});
+    delete pendingApplications[appId];
+  }
+  else if (data.startsWith('app_cancel_')) {
+    if (!isAdmin(query.from.id)) return;
+    const appId = data.replace('app_cancel_', '');
+    const app = pendingApplications[appId];
+    if (!app) return;
+    app.status = 'cancelled';
+    bot.sendMessage(app.chatId,
+      `❌ <b>Сиздин арызыңыз четке кагылды.</b>\n\n` +
+      `Маалымат туура эмес же чек ылайык эмес болсо болот. Оператор менен байланышыңыз: @help-MOLNIY-KG-bot`,
+      { parse_mode: 'HTML' }
+    );
+    bot.editMessageReplyMarkup(
+      { inline_keyboard: [[{ text: '❌ Четке кагылды', callback_data: 'noop' }]] },
+      { chat_id: chatId, message_id: query.message.message_id }
+    ).catch(() => {});
+    delete pendingApplications[appId];
+  }
+  else if (data.startsWith('app_ban_')) {
+    if (!isAdmin(query.from.id)) return;
+    const appId = data.replace('app_ban_', '');
+    const app = pendingApplications[appId];
+    if (!app) return;
+    app.status = 'banned';
+    banUser(app.chatId);
+    bot.sendMessage(app.chatId, `🚫 <b>Сиз ботту колдонуудан бандалдыңыз.</b>`, { parse_mode: 'HTML' }).catch(() => {});
+    bot.editMessageReplyMarkup(
+      { inline_keyboard: [[{ text: '🚫 Бандалды', callback_data: 'noop' }]] },
+      { chat_id: chatId, message_id: query.message.message_id }
+    ).catch(() => {});
+    delete pendingApplications[appId];
+  }
 });
 
 // ===================== ADMIN КОМАНДАСЫ =====================
 bot.onText(/\/admin/, (msg) => {
   const chatId = msg.chat.id;
+  console.log(`[CMD] /admin chat=${chatId}`);
   if (!isAdmin(chatId)) {
     bot.sendMessage(chatId, `⛔️ Бул команда сага жеткиликсиз.`);
     return;
@@ -563,6 +802,12 @@ bot.onText(/\/admin/, (msg) => {
 bot.on('message', (msg) => {
   const chatId = msg.chat.id;
   const session = getSession(chatId);
+
+  console.log(`[MESSAGE] chat=${chatId} step=${session.step || '-'} text="${msg.text || ''}" photo=${!!msg.photo} doc=${!!msg.document}`);
+
+  if (!isAdmin(chatId) && chatId !== GROUP_CHAT_ID && isBanned(chatId)) {
+    return;
+  }
 
   // ===== АДМИН ФЛОУ =====
   if (isAdmin(chatId) && session.adminStep) {
@@ -608,6 +853,7 @@ bot.on('message', (msg) => {
   if (session.step === 'waiting_id') {
     if (msg.text) {
       session.userId = msg.text.trim();
+      saveUserAccountId(chatId, session.site, session.userId);
       session.step = null;
       askForAmount(chatId);
     }
@@ -633,7 +879,7 @@ bot.on('message', (msg) => {
   // Чек (скриншот) күтүү
   if (session.step === 'waiting_receipt') {
     if (msg.photo || msg.document) {
-      showApplicationSent(chatId);
+      showApplicationSent(chatId, msg);
     } else {
       bot.sendMessage(chatId,
         `📸 Пожалуйста, отправьте <b>фото чека</b> (скриншот):`,

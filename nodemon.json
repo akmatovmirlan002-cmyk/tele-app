@@ -1,0 +1,10 @@
+{
+  "ignore": [
+    "banks.json",
+    "seen_users.json",
+    "banned_users.json",
+    "user_accounts.json",
+    "*.log",
+    "node_modules"
+  ]
+}

@@ -4,11 +4,15 @@
   "description": "MOLNIY KG Telegram Bot",
   "main": "bot.js",
   "scripts": {
-    "start": "node bot.js"
+    "start": "node bot.js",
+    "dev": "nodemon bot.js"
   },
   "dependencies": {
     "jimp": "^1.6.1",
     "jsqr": "^1.4.0",
     "node-telegram-bot-api": "^0.66.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.14"
   }
 }
