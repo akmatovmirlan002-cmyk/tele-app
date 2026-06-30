@@ -1,10 +1,18 @@
 {
+  "watch": ["src"],
+  "ext": "ts",
+  "exec": "ts-node src/main.ts",
   "ignore": [
     "banks.json",
     "seen_users.json",
     "banned_users.json",
     "user_accounts.json",
+    "user_phones.json",
+    "user_lang.json",
+    "withdraw_id_photos.json",
+    "qr_config.json",
     "*.log",
+    "dist",
     "node_modules"
   ]
 }
