@@ -102,6 +102,23 @@ export class BotService implements OnModuleInit {
     const lang = this.getLang(chatId) || 'ru';
     this.bot.sendMessage(chatId, this.t(lang, 'tech_work'), { parse_mode: 'HTML' }).catch(() => {});
   }
+  private lastMaintAlert = 0;
+  // Кардарга тех-режим + админдерге дароо кабар (жаап-жаба болбосун үчүн 60с чектөө)
+  private maintenanceAlert(chatId: number, where: string, reason: string) {
+    this.sendTechWork(chatId);
+    const now = Date.now();
+    if (now - this.lastMaintAlert < 60 * 1000) return;
+    this.lastMaintAlert = now;
+    for (const adminId of ADMIN_IDS) {
+      this.bot.sendMessage(adminId,
+        `🚨 <b>Ботто маселе!</b>\n\n` +
+        `📍 Жер: ${where}\n` +
+        `❗️ Себеп: ${reason}\n` +
+        `👤 Клиент: <code>${chatId}</code>\n\n` +
+        `Кардарларга "Технические работы" көрсөтүлүүдө.`,
+        { parse_mode: 'HTML' }).catch(() => {});
+    }
+  }
 
   // QR код түзүлбөй калса: админдерге билдирүү + кардарга "техникалык иштер"
   private handleQrFailure(chatId: number, reason: string) {
@@ -550,12 +567,14 @@ export class BotService implements OnModuleInit {
     }
     else if (data === 'main_menu') { session.step = null; this.showMainMenu(chatId); }
     else if (data === 'deposit') {
-      if (this.isMaintenance() && !this.isAdmin(chatId)) { this.sendTechWork(chatId); return; }
-      this.showDepositMenu(chatId);
+      if (this.isMaintenance() && !this.isAdmin(chatId)) { this.maintenanceAlert(chatId, 'Пополнить', 'QR код жок'); return; }
+      try { this.showDepositMenu(chatId); }
+      catch (e: any) { this.maintenanceAlert(chatId, 'Пополнить', e.message); }
     }
     else if (data === 'withdraw') {
-      if (this.isMaintenance() && !this.isAdmin(chatId)) { this.sendTechWork(chatId); return; }
-      this.showWithdraw(chatId);
+      if (this.isMaintenance() && !this.isAdmin(chatId)) { this.maintenanceAlert(chatId, 'Вывести', 'QR код жок'); return; }
+      try { this.showWithdraw(chatId); }
+      catch (e: any) { this.maintenanceAlert(chatId, 'Вывести', e.message); }
     }
     else if (data === 'withdraw_1xbet' || data === 'withdraw_melbet') {
       session.withdrawSite = data === 'withdraw_1xbet' ? '1XBET' : 'MELBET';
