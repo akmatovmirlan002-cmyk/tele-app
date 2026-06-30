@@ -500,8 +500,6 @@ export class BotService implements OnModuleInit {
       const chatId = msg.chat.id;
       if (this.storage.isBanned(chatId)) return;
       this.sessions[chatId] = {};
-      // QR код жок болсо — техникалык иштер (админ /admin аркылуу коё алат)
-      if (this.isMaintenance() && !this.isAdmin(chatId)) { this.sendTechWork(chatId); return; }
       const name = msg.from.first_name || '';
       const lang = this.getLang(chatId);
       if (!lang) {
