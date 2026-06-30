@@ -2,13 +2,30 @@
   "name": "molniy-kg-bot",
   "version": "1.0.0",
   "description": "MOLNIY KG Telegram Bot",
-  "main": "bot.js",
+  "main": "dist/main.js",
   "scripts": {
-    "start": "node bot.js"
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/main.js",
+    "dev": "nodemon",
+    "start:legacy": "node bot.js"
   },
   "dependencies": {
+    "@nestjs/common": "^10.4.22",
+    "@nestjs/core": "^10.4.22",
+    "dotenv": "^17.4.2",
     "jimp": "^1.6.1",
     "jsqr": "^1.4.0",
-    "node-telegram-bot-api": "^0.66.0"
+    "node-telegram-bot-api": "^0.66.0",
+    "pg": "^8.22.0",
+    "qrcode": "^1.5.4",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2"
+  },
+  "devDependencies": {
+    "@types/node": "^26.0.1",
+    "@types/pg": "^8.20.0",
+    "nodemon": "^3.1.14",
+    "ts-node": "^10.9.2",
+    "typescript": "^6.0.3"
   }
 }

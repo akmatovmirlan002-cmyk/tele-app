@@ -1,0 +1,34 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: molniy_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: molniy
+      POSTGRES_PASSWORD: molniy_pass
+      POSTGRES_DB: molniy_bot
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U molniy -d molniy_bot"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  bot:
+    build: .
+    container_name: molniy_bot
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # Токен .env файлынан алынат (BOT_TOKEN)
+      BOT_TOKEN: ${BOT_TOKEN}
+      # Контейнер ичинен Postgres'ке "postgres" аты менен туташат
+      DATABASE_URL: postgres://molniy:molniy_pass@postgres:5432/molniy_bot
+
+volumes:
+  pgdata:

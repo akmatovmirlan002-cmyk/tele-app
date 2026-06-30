@@ -1,0 +1,12 @@
+node_modules
+dist
+bot.js
+.env
+*.log
+*.json
+!package.json
+!package-lock.json
+!tsconfig.json
+.git
+.gitignore
+nodemon.json
