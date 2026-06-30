@@ -96,6 +96,30 @@ export class BotService implements OnModuleInit {
     return result ? result.data.trim() : null;
   }
 
+  // QR код жок болсо — бот техникалык иштер режиминде
+  private isMaintenance() { return !this.storage.loadGlobalQrHash(); }
+  private sendTechWork(chatId: number) {
+    const lang = this.getLang(chatId) || 'ru';
+    this.bot.sendMessage(chatId, this.t(lang, 'tech_work'), { parse_mode: 'HTML' }).catch(() => {});
+  }
+
+  // QR код түзүлбөй калса: админдерге билдирүү + кардарга "техникалык иштер"
+  private handleQrFailure(chatId: number, reason: string) {
+    const lang = this.getLang(chatId) || 'ru';
+    const session = this.session(chatId);
+    session.step = null;
+    clearTimeout(session.paymentTimer);
+    for (const adminId of ADMIN_IDS) {
+      this.bot.sendMessage(adminId,
+        `⚠️ <b>QR код түзүлбөй жатат!</b>\n\n` +
+        `👤 Клиент: <code>${chatId}</code>\n` +
+        `💰 Сумма: <b>${session.amount || '—'}</b>\n` +
+        `❗️ Себеп: ${reason}`,
+        { parse_mode: 'HTML' }).catch(() => {});
+    }
+    this.bot.sendMessage(chatId, this.t(lang, 'tech_work'), { parse_mode: 'HTML' }).catch(() => {});
+  }
+
   private langKeyboard() {
     return { inline_keyboard: [[
       { text: '🇰🇬 Кыргызча', callback_data: 'setlang_ky' },
@@ -191,20 +215,23 @@ export class BotService implements OnModuleInit {
     const caption = this.t(lang, 'bank_caption', session.userId, session.amount);
 
     const link = this.storage.loadGlobalQrHash();
-    if (link) {
-      try {
-        const qrBuffer = await QRCode.toBuffer(link, { type: 'png', width: 512, margin: 2, errorCorrectionLevel: 'M' });
-        await this.bot.sendPhoto(chatId, qrBuffer, { caption, parse_mode: 'HTML', reply_markup: { inline_keyboard: rows } });
-        return;
-      } catch (err) { console.log('[QR_GEN_ERR]', err.message); }
+    if (!link) {
+      this.handleQrFailure(chatId, 'showBankMenu: QR код коюлган жок');
+      return;
     }
-    this.bot.sendMessage(chatId, caption, { parse_mode: 'HTML', reply_markup: { inline_keyboard: rows } });
+    try {
+      const qrBuffer = await QRCode.toBuffer(link, { type: 'png', width: 512, margin: 2, errorCorrectionLevel: 'M' });
+      await this.bot.sendPhoto(chatId, qrBuffer, { caption, parse_mode: 'HTML', reply_markup: { inline_keyboard: rows } });
+    } catch (err) {
+      console.log('[QR_GEN_ERR]', err.message);
+      this.handleQrFailure(chatId, `showBankMenu: ${err.message}`);
+    }
   }
   private async sendGlobalQr(chatId: number) {
     const session = this.session(chatId);
     const lang = this.getLang(chatId) || 'ru';
     const link = this.storage.loadGlobalQrHash();
-    if (!link) { this.bot.sendMessage(chatId, this.t(lang, 'qr_not_set')); return; }
+    if (!link) { this.handleQrFailure(chatId, 'sendGlobalQr: QR код коюлган жок'); return; }
     session.bank = 'QR';
     session.step = 'waiting_receipt';
     const rows: any[] = [];
@@ -217,7 +244,7 @@ export class BotService implements OnModuleInit {
       await this.bot.sendPhoto(chatId, qrBuffer, { caption, parse_mode: 'HTML', reply_markup: { inline_keyboard: rows } });
     } catch (err) {
       console.log('[QR_GEN_ERR]', err.message);
-      this.bot.sendMessage(chatId, caption + `\n\n🔗 <code>${link}</code>`, { parse_mode: 'HTML', reply_markup: { inline_keyboard: rows } });
+      this.handleQrFailure(chatId, `sendGlobalQr: ${err.message}`);
     }
   }
   private sendApplicationToGroup(chatId: number, msg: any) {
@@ -384,6 +411,9 @@ export class BotService implements OnModuleInit {
     rows.push([{ text: '➕ Банк кошуу', callback_data: 'admin_add' }]);
     const qrSet = this.storage.loadGlobalQrHash() ? '✅' : '❌';
     rows.push([{ text: `📱 Жалпы QR код коюу ${qrSet}`, callback_data: 'admin_setglobalqr' }]);
+    if (this.storage.loadGlobalQrHash()) {
+      rows.push([{ text: '🗑 QR өчүрүү (тех. иштер режими)', callback_data: 'admin_delglobalqr' }]);
+    }
     const id1 = this.storage.getWithdrawIdPhoto('1xbet') ? '✅' : '❌';
     const id2 = this.storage.getWithdrawIdPhoto('melbet') ? '✅' : '❌';
     rows.push([
@@ -470,6 +500,8 @@ export class BotService implements OnModuleInit {
       const chatId = msg.chat.id;
       if (this.storage.isBanned(chatId)) return;
       this.sessions[chatId] = {};
+      // QR код жок болсо — техникалык иштер (админ /admin аркылуу коё алат)
+      if (this.isMaintenance() && !this.isAdmin(chatId)) { this.sendTechWork(chatId); return; }
       const name = msg.from.first_name || '';
       const lang = this.getLang(chatId);
       if (!lang) {
@@ -519,8 +551,14 @@ export class BotService implements OnModuleInit {
       this.showWelcome(chatId, query.from.first_name || '', lang);
     }
     else if (data === 'main_menu') { session.step = null; this.showMainMenu(chatId); }
-    else if (data === 'deposit') this.showDepositMenu(chatId);
-    else if (data === 'withdraw') this.showWithdraw(chatId);
+    else if (data === 'deposit') {
+      if (this.isMaintenance() && !this.isAdmin(chatId)) { this.sendTechWork(chatId); return; }
+      this.showDepositMenu(chatId);
+    }
+    else if (data === 'withdraw') {
+      if (this.isMaintenance() && !this.isAdmin(chatId)) { this.sendTechWork(chatId); return; }
+      this.showWithdraw(chatId);
+    }
     else if (data === 'withdraw_1xbet' || data === 'withdraw_melbet') {
       session.withdrawSite = data === 'withdraw_1xbet' ? '1XBET' : 'MELBET';
       this.showWithdrawBanks(chatId);
@@ -578,6 +616,12 @@ export class BotService implements OnModuleInit {
     else if (data === 'admin_menu') { if (!this.isAdmin(chatId)) return; session.adminStep = null; this.showAdminMenu(chatId); }
     else if (data === 'admin_add') { if (!this.isAdmin(chatId)) return; this.startAddBank(chatId); }
     else if (data === 'admin_setglobalqr') { if (!this.isAdmin(chatId)) return; this.askGlobalQr(chatId); }
+    else if (data === 'admin_delglobalqr') {
+      if (!this.isAdmin(chatId)) return;
+      this.storage.deleteGlobalQrHash();
+      this.bot.sendMessage(chatId, `🗑 Жалпы QR өчүрүлдү. Бот эми <b>техникалык иштер</b> режиминде (кардарларга).`, { parse_mode: 'HTML' });
+      this.showAdminMenu(chatId);
+    }
     else if (data === 'admin_idphoto_1xbet' || data === 'admin_idphoto_melbet') {
       if (!this.isAdmin(chatId)) return;
       const site = data === 'admin_idphoto_1xbet' ? '1xbet' : 'melbet';

@@ -89,6 +89,7 @@ export class StorageService implements OnModuleInit {
   // ===== Жалпы QR =====
   loadGlobalQrHash(): string | null { return this.get<any>('qr_config', {}).hash || null; }
   saveGlobalQrHash(hash: string) { this.set('qr_config', { hash }); }
+  deleteGlobalQrHash() { this.set('qr_config', {}); }
 
   // ===== Көрүлгөн колдонуучулар =====
   saveSeenUser(user: any) {
