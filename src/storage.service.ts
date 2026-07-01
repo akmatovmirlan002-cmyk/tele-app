@@ -2,7 +2,7 @@ import { Injectable, OnModuleInit } from '@nestjs/common';
 import * as fs from 'fs';
 import * as path from 'path';
 import { Pool } from 'pg';
-import { MAX_SAVED_IDS, DATABASE_URL } from './config';
+import { MAX_SAVED_IDS, DATABASE_URL, DEFAULT_BANKS } from './config';
 
 const ROOT = path.join(__dirname, '..');
 
@@ -45,6 +45,15 @@ export class StorageService implements OnModuleInit {
             );
           }
         }
+      }
+      // Банктар такыр жок болсо (таза база) — демейки банктарды коёбуз
+      if (this.cache['banks'] === undefined) {
+        this.cache['banks'] = DEFAULT_BANKS;
+        await this.pool.query(
+          'INSERT INTO kv(key, value) VALUES($1, $2) ON CONFLICT (key) DO UPDATE SET value = excluded.value',
+          ['banks', JSON.stringify(DEFAULT_BANKS)],
+        );
+        console.log('🌱 Демейки банктар коюлду (таза база).');
       }
       this.mode = 'pg';
       console.log('🗄  Хранилище: PostgreSQL');
