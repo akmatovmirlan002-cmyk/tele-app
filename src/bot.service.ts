@@ -2,7 +2,7 @@ import { Injectable, OnModuleInit } from '@nestjs/common';
 import * as fs from 'fs';
 import * as path from 'path';
 import { Jimp } from 'jimp';
-import * as jsQR from 'jsqr';
+import jsQR from 'jsqr';
 import * as QRCode from 'qrcode';
 import TelegramBot = require('node-telegram-bot-api');
 
@@ -92,7 +92,7 @@ export class BotService implements OnModuleInit {
     const buffer = Buffer.from(await res.arrayBuffer());
     const image = await Jimp.read(buffer);
     const { data, width, height } = image.bitmap;
-    const result = (jsQR as any)(new Uint8ClampedArray(data), width, height);
+    const result = jsQR(new Uint8ClampedArray(data), width, height);
     return result ? result.data.trim() : null;
   }
 
@@ -441,6 +441,7 @@ export class BotService implements OnModuleInit {
     rows.push([{ text: `📷 Вывод инструкция фото ${insSet}`, callback_data: 'admin_idphoto_instruction' }]);
     const depSet = this.storage.getWithdrawIdPhoto('deposit_account') ? '✅' : '❌';
     rows.push([{ text: `📷 Пополнение фото ${depSet}`, callback_data: 'admin_idphoto_deposit_account' }]);
+    rows.push([{ text: `📢 Рассылка (${this.storage.getAllUsers().length})`, callback_data: 'admin_broadcast' }]);
     this.bot.sendMessage(chatId,
       `⚙️ <b>Админ панель — Банктар</b>\n\n📱 Жалпы QR: ${qrSet === '✅' ? 'коюлган' : 'коюла элек'}\n\nБанк кошуу, аты/QR'ын өзгөртүү, өчүрүү же жалпы QR коюу:`,
       { parse_mode: 'HTML', reply_markup: { inline_keyboard: rows } });
@@ -511,6 +512,23 @@ export class BotService implements OnModuleInit {
     }
   }
 
+  // Рассылка: copyMessage менен баарына жөнөтөт (текст/фото/форматтоо сакталат)
+  private async runBroadcast(adminChatId: number, fromChatId: number, messageId: number) {
+    const users = this.storage.getAllUsers();
+    let ok = 0, fail = 0;
+    for (const uid of users) {
+      if (this.storage.isBanned(uid)) continue;
+      try {
+        await this.bot.copyMessage(uid, fromChatId, messageId);
+        ok++;
+      } catch (e) {
+        fail++;
+      }
+      await new Promise((r) => setTimeout(r, 50)); // rate-limit коргоо
+    }
+    this.bot.sendMessage(adminChatId, `📢 <b>Рассылка завершена</b>\n\n✅ Доставлено: <b>${ok}</b>\n❌ Не доставлено: <b>${fail}</b>`, { parse_mode: 'HTML' });
+  }
+
   // ===================== HANDLERS =====================
   private registerHandlers() {
     this.bot.onText(/\/start/, (msg: any) => {
@@ -547,6 +565,22 @@ export class BotService implements OnModuleInit {
       this.showAdminMenu(chatId);
     });
 
+    this.bot.onText(/\/broadcast/, (msg: any) => {
+      const chatId = msg.chat.id;
+      if (!this.isAdmin(chatId)) return;
+      const session = this.session(chatId);
+      session.adminStep = 'broadcast_wait';
+      this.bot.sendMessage(chatId, `📢 <b>Рассылка</b>\n\nОтправьте сообщение (текст/фото), которое разослать всем пользователям.\nОтмена: /cancel`, { parse_mode: 'HTML' });
+    });
+
+    this.bot.onText(/\/cancel/, (msg: any) => {
+      const chatId = msg.chat.id;
+      if (!this.isAdmin(chatId)) return;
+      const session = this.session(chatId);
+      session.adminStep = null;
+      this.bot.sendMessage(chatId, `❌ Отменено.`);
+    });
+
     this.bot.on('callback_query', (query: any) => this.onCallback(query));
     this.bot.on('message', (msg: any) => this.onMessage(msg));
     this.bot.on('polling_error', (e: any) => console.log('polling_error', e.code || e.message));
@@ -556,6 +590,7 @@ export class BotService implements OnModuleInit {
     const chatId = query.message.chat.id;
     const data = query.data;
     const session = this.session(chatId);
+    this.storage.addUser(chatId);
     this.bot.answerCallbackQuery(query.id).catch(() => {});
     if (this.isDuplicateCallback(query.id)) return;
 
@@ -630,8 +665,26 @@ export class BotService implements OnModuleInit {
     else if (data === 'pay_qr') this.sendGlobalQr(chatId);
     else if (data === 'back_to_banks') this.showBankMenu(chatId);
     // Админ
+    else if (data === 'bcast_send') {
+      if (!this.isAdmin(chatId)) return;
+      const from = session.broadcastFrom, mid = session.broadcastMsgId;
+      session.broadcastFrom = null; session.broadcastMsgId = null;
+      if (!from || !mid) { this.bot.sendMessage(chatId, '❌ Сообщение для рассылки не найдено.'); return; }
+      this.bot.editMessageReplyMarkup({ inline_keyboard: [[{ text: '📤 Отправляется...', callback_data: 'noop' }]] }, { chat_id: chatId, message_id: query.message.message_id }).catch(() => {});
+      this.runBroadcast(chatId, from, mid);
+    }
+    else if (data === 'bcast_cancel') {
+      if (!this.isAdmin(chatId)) return;
+      session.broadcastFrom = null; session.broadcastMsgId = null;
+      this.bot.editMessageReplyMarkup({ inline_keyboard: [[{ text: '❌ Отменено', callback_data: 'noop' }]] }, { chat_id: chatId, message_id: query.message.message_id }).catch(() => {});
+    }
     else if (data === 'admin_menu') { if (!this.isAdmin(chatId)) return; session.adminStep = null; this.showAdminMenu(chatId); }
     else if (data === 'admin_add') { if (!this.isAdmin(chatId)) return; this.startAddBank(chatId); }
+    else if (data === 'admin_broadcast') {
+      if (!this.isAdmin(chatId)) return;
+      session.adminStep = 'broadcast_wait';
+      this.bot.sendMessage(chatId, `📢 <b>Рассылка</b>\n\nОтправьте сообщение (текст/фото), которое разослать всем пользователям.\nОтмена: /cancel`, { parse_mode: 'HTML' });
+    }
     else if (data === 'admin_setglobalqr') { if (!this.isAdmin(chatId)) return; this.askGlobalQr(chatId); }
     else if (data === 'admin_delglobalqr') {
       if (!this.isAdmin(chatId)) return;
@@ -745,6 +798,8 @@ export class BotService implements OnModuleInit {
     const chatId = msg.chat.id;
     const session = this.session(chatId);
 
+    this.storage.addUser(chatId); // рассылка үчүн каттоо
+
     if (!this.isAdmin(chatId) && chatId !== GROUP_CHAT_ID && chatId !== WITHDRAW_GROUP_CHAT_ID && this.storage.isBanned(chatId)) return;
 
     // Custom emoji ID окуп берүү (админ)
@@ -763,6 +818,21 @@ export class BotService implements OnModuleInit {
 
     // Админ флоу
     if (this.isAdmin(chatId) && session.adminStep) {
+      if (session.adminStep === 'broadcast_wait') {
+        if (msg.text && msg.text.startsWith('/')) return; // /cancel ж.б. өткөр
+        session.broadcastFrom = chatId;
+        session.broadcastMsgId = msg.message_id;
+        session.adminStep = null;
+        const count = this.storage.getAllUsers().length;
+        this.bot.sendMessage(chatId, `📢 Разослать это сообщение <b>${count}</b> пользователям?`, {
+          parse_mode: 'HTML',
+          reply_markup: { inline_keyboard: [[
+            { text: `✅ Отправить (${count})`, callback_data: 'bcast_send' },
+            { text: '❌ Отмена', callback_data: 'bcast_cancel' },
+          ]] },
+        });
+        return;
+      }
       if (session.adminStep === 'add_name' && msg.text) {
         session.adminNewName = msg.text.trim(); session.adminStep = 'add_baseurl';
         this.bot.sendMessage(chatId, `🔗 Эми банктын линк үлгүсүн жазыңыз ("#" белгисине чейинки бөлүгү), мисалы:\nhttps://bakai.app/#`);

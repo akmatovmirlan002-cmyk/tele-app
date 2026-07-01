@@ -9,7 +9,7 @@ const ROOT = path.join(__dirname, '..');
 // KV ачкычтары → файл аттары (файл резерви/миграция үчүн)
 const KEYS = [
   'banks', 'qr_config', 'seen_users', 'banned_users',
-  'user_accounts', 'user_phones', 'withdraw_id_photos', 'user_lang',
+  'user_accounts', 'user_phones', 'withdraw_id_photos', 'user_lang', 'all_users',
 ];
 
 function toIdArray(value: any): string[] {
@@ -140,6 +140,14 @@ export class StorageService implements OnModuleInit {
     this.set('withdraw_id_photos', data);
   }
   getWithdrawIdPhoto(key: string): string | null { return this.get<any>('withdraw_id_photos', {})[key] || null; }
+
+  // ===== Бардык колдонуучулар (рассылка үчүн) =====
+  addUser(chatId: number) {
+    if (chatId <= 0) return; // группаларды кошпойбуз
+    const ids = this.get<number[]>('all_users', []);
+    if (!ids.includes(chatId)) { ids.push(chatId); this.set('all_users', ids); }
+  }
+  getAllUsers(): number[] { return this.get<number[]>('all_users', []); }
 
   // ===== Тил =====
   getLang(chatId: number): string | null { return this.get<any>('user_lang', {})[chatId] || null; }
