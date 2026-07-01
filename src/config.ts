@@ -22,12 +22,13 @@ export const WITHDRAW_GROUP_CHAT_ID: number | null = -1004408979821;
 
 export const MAX_SAVED_IDS = 3;
 
-// Демейки банктар — база таза (бош) болгондо автоматтык коюлат.
-// Кийин /admin аркылуу өзгөртсө болот.
+// Демейки банктар — база таза болгондо коюлат. Хеш ЖОК (бош):
+// бардык банк баскычтары жалпы QR'дын хешин колдонот — админ QR'ды алмаштырса, баары жаңырат.
 export const DEFAULT_BANKS = [
   { id: 'bakai', name: '🏦 Bakai Bank', baseUrl: 'https://bakai.app/#', hash: '' },
   { id: 'dengi', name: '🏦 O!Dengi', baseUrl: 'https://api.dengi.o.kg/#', hash: '' },
   { id: 'mbank', name: '🏦 MBANK', baseUrl: 'https://app.mbank.kg/qr/#', hash: '' },
+  { id: 'megapay', name: '🏦 MegaPay', baseUrl: 'https://megapay.kg/get#', hash: '' },
 ];
 
 // PostgreSQL байланышы (docker-compose менен дал келет)

@@ -224,18 +224,21 @@ export class BotService implements OnModuleInit {
       }
     }, 5 * 60 * 1000);
 
-    const banks = this.storage.loadBanks();
-    const items: any[] = banks.map((b) => ({ text: b.name, url: `${b.baseUrl}${b.hash}` }));
-    items.push({ text: this.t(lang, 'btn_cancel2'), callback_data: 'main_menu' });
-    const rows: any[] = [];
-    for (let i = 0; i < items.length; i += 2) rows.push(items.slice(i, i + 2));
-    const caption = this.t(lang, 'bank_caption', session.userId, session.amount);
-
     const link = this.storage.loadGlobalQrHash();
     if (!link) {
       this.handleQrFailure(chatId, 'showBankMenu: QR код коюлган жок');
       return;
     }
+    // Бардык банк баскычтары жалпы QR'дын хешин колдонот (# дан кийинки бөлүк)
+    const emv = this.extractHash(link);
+
+    const banks = this.storage.loadBanks();
+    const items: any[] = banks.map((b) => ({ text: b.name, url: `${b.baseUrl}${emv}` }));
+    items.push({ text: this.t(lang, 'btn_cancel2'), callback_data: 'main_menu' });
+    const rows: any[] = [];
+    for (let i = 0; i < items.length; i += 2) rows.push(items.slice(i, i + 2));
+    const caption = this.t(lang, 'bank_caption', session.userId, session.amount);
+
     try {
       const qrBuffer = await QRCode.toBuffer(link, { type: 'png', width: 512, margin: 2, errorCorrectionLevel: 'M' });
       await this.bot.sendPhoto(chatId, qrBuffer, { caption, parse_mode: 'HTML', reply_markup: { inline_keyboard: rows } });
@@ -421,7 +424,6 @@ export class BotService implements OnModuleInit {
     const banks = this.storage.loadBanks();
     const rows: any[] = banks.map((b) => [
       { text: b.name, callback_data: 'noop' },
-      { text: '🔄 QR', callback_data: `admin_editqr_${b.id}` },
       { text: '✏️ Аты', callback_data: `admin_editname_${b.id}` },
       { text: '🗑', callback_data: `admin_delete_${b.id}` },
     ]);
@@ -452,6 +454,17 @@ export class BotService implements OnModuleInit {
     const rows: any[] = BANK_TEMPLATES.map((tpl, i) => [{ text: tpl.name, callback_data: `admin_tpl_${i}` }]);
     rows.push([{ text: '✏️ Башка (өзүм жазам)', callback_data: 'admin_tpl_custom' }]);
     this.bot.sendMessage(chatId, `🏦 Банктын түрүн тандаңыз:`, { reply_markup: { inline_keyboard: rows } });
+  }
+  // Жаңы банкты сактайт (хеш ЖОК — жалпы QR'дын хешин колдонот)
+  private saveNewBank(chatId: number) {
+    const session = this.session(chatId);
+    const banks = this.storage.loadBanks();
+    const bank = { id: this.makeBankId(session.adminNewName || 'bank'), name: session.adminNewName || '🏦 Банк', baseUrl: session.adminNewBaseUrl || '', hash: '' };
+    banks.push(bank);
+    this.storage.saveBanks(banks);
+    session.adminStep = null; session.adminNewName = null; session.adminNewBaseUrl = null;
+    this.bot.sendMessage(chatId, `✅ Банк кошулду: <b>${bank.name}</b>`, { parse_mode: 'HTML' });
+    this.showAdminMenu(chatId);
   }
   private askEditName(chatId: number, bankId: string) {
     const session = this.session(chatId);
@@ -706,11 +719,10 @@ export class BotService implements OnModuleInit {
       if (key === 'custom') { session.adminStep = 'add_name'; this.bot.sendMessage(chatId, `📝 Банктын атын жазыңыз (мисалы: 🏦 Bakai Bank):`); }
       else {
         const tpl = BANK_TEMPLATES[parseInt(key)];
-        session.adminNewName = tpl.name; session.adminNewBaseUrl = tpl.baseUrl; session.adminStep = 'add_qr';
-        this.bot.sendMessage(chatId, `📸 Эми «${tpl.name}» банкынын QR кодун сурет (фото) түрүндө жибериңиз:`);
+        session.adminNewName = tpl.name; session.adminNewBaseUrl = tpl.baseUrl;
+        this.saveNewBank(chatId);
       }
     }
-    else if (data.startsWith('admin_editqr_')) { if (!this.isAdmin(chatId)) return; this.askQr(chatId, data.replace('admin_editqr_', '')); }
     else if (data.startsWith('admin_editname_')) { if (!this.isAdmin(chatId)) return; this.askEditName(chatId, data.replace('admin_editname_', '')); }
     else if (data.startsWith('admin_deleteconfirm_')) {
       if (!this.isAdmin(chatId)) return;
@@ -839,8 +851,8 @@ export class BotService implements OnModuleInit {
         return;
       }
       if (session.adminStep === 'add_baseurl' && msg.text) {
-        session.adminNewBaseUrl = msg.text.trim(); session.adminStep = 'add_qr';
-        this.bot.sendMessage(chatId, `📸 Эми ошол банктын QR кодун сурет (фото) түрүндө жибериңиз:`);
+        session.adminNewBaseUrl = msg.text.trim();
+        this.saveNewBank(chatId);
         return;
       }
       if (session.adminStep === 'edit_name' && msg.text) {
@@ -851,7 +863,7 @@ export class BotService implements OnModuleInit {
         this.showAdminMenu(chatId);
         return;
       }
-      if (session.adminStep === 'add_qr' || session.adminStep === 'edit_qr' || session.adminStep === 'set_global_qr') {
+      if (session.adminStep === 'set_global_qr') {
         if (msg.photo) this.handleQrPhoto(chatId, msg);
         else this.bot.sendMessage(chatId, `📸 QR кодду сурет (фото) түрүндө жибериңиз:`);
         return;
