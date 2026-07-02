@@ -10,7 +10,7 @@ import { StorageService } from './storage.service';
 import { I18nService } from './i18n.service';
 import { CashdeskService } from './cashdesk.service';
 import {
-  TOKEN, ADMIN_IDS, GROUP_CHAT_ID, WITHDRAW_GROUP_CHAT_ID,
+  TOKEN, ADMIN_IDS, GROUP_CHAT_ID, WITHDRAW_GROUP_CHAT_ID, CASHDESK,
 } from './config';
 
 const ROOT = path.join(__dirname, '..');
@@ -528,17 +528,20 @@ export class BotService implements OnModuleInit {
   }
 
   // Оюнчунун ID'син API аркылуу текшерет. {ok, name}
-  private async verifyPlayer(userId: string): Promise<{ ok: boolean; name?: string }> {
+  private async verifyPlayer(userId: string): Promise<{ ok: boolean; name?: string; wrongCurrency?: boolean }> {
     if (!this.cashdesk.enabled()) return { ok: true }; // API жок болсо — текшербей өткөрөбүз
     try {
       const r = await this.cashdesk.searchPlayer(userId);
       const j = r.json || {};
       const uidNum = Number(j.UserId ?? j.userId ?? 0);
       const name = j.Name || j.name;
-      console.log(`[VERIFY] id=${userId} status=${r.status} UserId=${uidNum} name=${name || '-'}`);
-      // Чыныгы оюнчу: HTTP 200 жана UserId > 0 болушу керек. Жок ID → UserId:0.
-      if (r.status === 200 && uidNum > 0) return { ok: true, name };
-      return { ok: false };
+      const cur = Number(j.CurrencyId ?? j.currencyId ?? 0);
+      console.log(`[VERIFY] id=${userId} status=${r.status} UserId=${uidNum} cur=${cur} name=${name || '-'}`);
+      // Чыныгы оюнчу: HTTP 200, UserId > 0. Жок ID → UserId:0.
+      if (r.status !== 200 || uidNum <= 0) return { ok: false };
+      // Валюта туура эмес болсо (KGS=7 эмес) — четке кагабыз
+      if (cur !== CASHDESK.currencyId) return { ok: false, wrongCurrency: true };
+      return { ok: true, name };
     } catch (e: any) {
       console.log('[VERIFY_ERR]', e.message);
       return { ok: false }; // ката болсо — өткөрбөйбүз (коопсуздук)
@@ -958,7 +961,7 @@ export class BotService implements OnModuleInit {
       if (msg.text) {
         const uid = msg.text.trim();
         const v = await this.verifyPlayer(uid);
-        if (!v.ok) { this.bot.sendMessage(chatId, this.t(this.getLang(chatId) || 'ru', 'id_not_found'), { parse_mode: 'HTML' }); return; }
+        if (!v.ok) { this.bot.sendMessage(chatId, this.t(this.getLang(chatId) || 'ru', v.wrongCurrency ? 'wrong_currency' : 'id_not_found'), { parse_mode: 'HTML' }); return; }
         session.withdrawUserId = uid;
         this.storage.saveUserAccountId(chatId, (session.withdrawSite || '').toLowerCase(), uid);
         session.step = null;
@@ -1000,7 +1003,7 @@ export class BotService implements OnModuleInit {
       if (msg.text) {
         const uid = msg.text.trim();
         const v = await this.verifyPlayer(uid);
-        if (!v.ok) { this.bot.sendMessage(chatId, this.t(this.getLang(chatId) || 'ru', 'id_not_found'), { parse_mode: 'HTML' }); return; }
+        if (!v.ok) { this.bot.sendMessage(chatId, this.t(this.getLang(chatId) || 'ru', v.wrongCurrency ? 'wrong_currency' : 'id_not_found'), { parse_mode: 'HTML' }); return; }
         session.userId = uid;
         this.storage.saveUserAccountId(chatId, session.site, uid);
         session.step = null;

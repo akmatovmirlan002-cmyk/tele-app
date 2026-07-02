@@ -38,6 +38,7 @@ export const CASHDESK = {
   hash: process.env.CASHDESK_HASH || 'fa8d3b8fe2e413ce067379ea545643059a4a11e48ec9a88fb6d5708ea28f72f6',
   cashierpass: process.env.CASHDESK_PASS || '', // ⚠️ .env'ге кой
   login: process.env.CASHDESK_LOGIN || '',
+  currencyId: Number(process.env.CASHDESK_CURRENCY || 7), // 7 = KGS (кыргыз сом)
 };
 
 // PostgreSQL байланышы (docker-compose менен дал келет)
