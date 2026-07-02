@@ -31,6 +31,15 @@ export const DEFAULT_BANKS = [
   { id: 'megapay', name: '🏦 MegaPay', baseUrl: 'https://megapay.kg/get#', hash: '' },
 ];
 
+// 1xBet/Melbet кассир API (CashdeskBotAPI)
+export const CASHDESK = {
+  url: process.env.CASHDESK_URL || 'https://partners.servcul.com/CashdeskBotAPI',
+  cashdeskId: process.env.CASHDESK_ID || '1471068',
+  hash: process.env.CASHDESK_HASH || 'fa8d3b8fe2e413ce067379ea545643059a4a11e48ec9a88fb6d5708ea28f72f6',
+  cashierpass: process.env.CASHDESK_PASS || '', // ⚠️ .env'ге кой
+  login: process.env.CASHDESK_LOGIN || '',
+};
+
 // PostgreSQL байланышы (docker-compose менен дал келет)
 export const DATABASE_URL =
   process.env.DATABASE_URL ||

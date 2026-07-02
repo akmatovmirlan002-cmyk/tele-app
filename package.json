@@ -16,6 +16,7 @@
     "jimp": "^1.6.1",
     "jsqr": "^1.4.0",
     "node-telegram-bot-api": "^0.66.0",
+    "pdf-parse": "^2.4.5",
     "pg": "^8.22.0",
     "qrcode": "^1.5.4",
     "reflect-metadata": "^0.2.2",

@@ -8,6 +8,7 @@ import TelegramBot = require('node-telegram-bot-api');
 
 import { StorageService } from './storage.service';
 import { I18nService } from './i18n.service';
+import { CashdeskService } from './cashdesk.service';
 import {
   TOKEN, ADMIN_IDS, GROUP_CHAT_ID, WITHDRAW_GROUP_CHAT_ID,
 } from './config';
@@ -40,6 +41,7 @@ export class BotService implements OnModuleInit {
   constructor(
     private readonly storage: StorageService,
     private readonly i18n: I18nService,
+    private readonly cashdesk: CashdeskService,
   ) {}
 
   onModuleInit() {
@@ -525,6 +527,24 @@ export class BotService implements OnModuleInit {
     }
   }
 
+  // Оюнчунун ID'син API аркылуу текшерет. {ok, name}
+  private async verifyPlayer(userId: string): Promise<{ ok: boolean; name?: string }> {
+    if (!this.cashdesk.enabled()) return { ok: true }; // API жок болсо — текшербей өткөрөбүз
+    try {
+      const r = await this.cashdesk.searchPlayer(userId);
+      const j = r.json || {};
+      const uidNum = Number(j.UserId ?? j.userId ?? 0);
+      const name = j.Name || j.name;
+      console.log(`[VERIFY] id=${userId} status=${r.status} UserId=${uidNum} name=${name || '-'}`);
+      // Чыныгы оюнчу: HTTP 200 жана UserId > 0 болушу керек. Жок ID → UserId:0.
+      if (r.status === 200 && uidNum > 0) return { ok: true, name };
+      return { ok: false };
+    } catch (e: any) {
+      console.log('[VERIFY_ERR]', e.message);
+      return { ok: false }; // ката болсо — өткөрбөйбүз (коопсуздук)
+    }
+  }
+
   // Рассылка: copyMessage менен баарына жөнөтөт (текст/фото/форматтоо сакталат)
   private async runBroadcast(adminChatId: number, fromChatId: number, messageId: number) {
     const users = this.storage.getAllUsers();
@@ -594,12 +614,32 @@ export class BotService implements OnModuleInit {
       this.bot.sendMessage(chatId, `❌ Отменено.`);
     });
 
+    this.bot.onText(/\/apibalance/, async (msg: any) => {
+      const chatId = msg.chat.id;
+      if (!this.isAdmin(chatId)) return;
+      if (!this.cashdesk.enabled()) { this.bot.sendMessage(chatId, `⚠️ API коюла элек: .env'ге CASHDESK_PASS кой.`); return; }
+      try {
+        const r = await this.cashdesk.getBalance();
+        this.bot.sendMessage(chatId, `💰 <b>Касса балансы</b>\nHTTP ${r.status}\n<code>${(r.text || '').slice(0, 500)}</code>`, { parse_mode: 'HTML' });
+      } catch (e: any) { this.bot.sendMessage(chatId, `❌ Ката: ${e.message}`); }
+    });
+
+    this.bot.onText(/\/apiplayer (.+)/, async (msg: any, match: any) => {
+      const chatId = msg.chat.id;
+      if (!this.isAdmin(chatId)) return;
+      if (!this.cashdesk.enabled()) { this.bot.sendMessage(chatId, `⚠️ API коюла элек: .env'ге CASHDESK_PASS кой.`); return; }
+      try {
+        const r = await this.cashdesk.searchPlayer(match[1].trim());
+        this.bot.sendMessage(chatId, `🔎 <b>Оюнчу</b>\nHTTP ${r.status}\n<code>${(r.text || '').slice(0, 500)}</code>`, { parse_mode: 'HTML' });
+      } catch (e: any) { this.bot.sendMessage(chatId, `❌ Ката: ${e.message}`); }
+    });
+
     this.bot.on('callback_query', (query: any) => this.onCallback(query));
     this.bot.on('message', (msg: any) => this.onMessage(msg));
     this.bot.on('polling_error', (e: any) => console.log('polling_error', e.code || e.message));
   }
 
-  private onCallback(query: any) {
+  private async onCallback(query: any) {
     const chatId = query.message.chat.id;
     const data = query.data;
     const session = this.session(chatId);
@@ -751,7 +791,27 @@ export class BotService implements OnModuleInit {
       const app = this.pendingApplications[appId];
       if (!app) return;
       app.status = 'approved';
-      this.confirmPayment(app);
+      // API аркылуу оюнчунун эсебин автоматтык толуктайбыз
+      if (this.cashdesk.enabled()) {
+        try {
+          const r = await this.cashdesk.deposit(app.userId, app.amount);
+          const j = r.json || {};
+          const ok = j.Success === true || j.success === true;
+          if (ok) {
+            this.confirmPayment(app);
+            this.bot.sendMessage(chatId, `✅ API: эсеп толукталды (${app.userId}, ${app.amount}).`);
+          } else {
+            const msg = j.Message || j.message || r.text || 'unknown';
+            this.confirmPayment(app); // клиентке баары бир ырастайбыз
+            this.bot.sendMessage(chatId, `⚠️ API депозит катасы (${app.userId}): ${String(msg).slice(0, 200)}`);
+          }
+        } catch (e: any) {
+          this.confirmPayment(app);
+          this.bot.sendMessage(chatId, `⚠️ API байланыш катасы: ${e.message}`);
+        }
+      } else {
+        this.confirmPayment(app);
+      }
       this.bot.editMessageReplyMarkup({ inline_keyboard: [[{ text: '✅ Подтверждено', callback_data: 'noop' }]] }, { chat_id: chatId, message_id: query.message.message_id }).catch(() => {});
       delete this.pendingApplications[appId];
     }
@@ -806,7 +866,7 @@ export class BotService implements OnModuleInit {
     }
   }
 
-  private onMessage(msg: any) {
+  private async onMessage(msg: any) {
     const chatId = msg.chat.id;
     const session = this.session(chatId);
 
@@ -896,8 +956,11 @@ export class BotService implements OnModuleInit {
     }
     if (session.step === 'waiting_withdraw_id') {
       if (msg.text) {
-        session.withdrawUserId = msg.text.trim();
-        this.storage.saveUserAccountId(chatId, (session.withdrawSite || '').toLowerCase(), session.withdrawUserId);
+        const uid = msg.text.trim();
+        const v = await this.verifyPlayer(uid);
+        if (!v.ok) { this.bot.sendMessage(chatId, this.t(this.getLang(chatId) || 'ru', 'id_not_found'), { parse_mode: 'HTML' }); return; }
+        session.withdrawUserId = uid;
+        this.storage.saveUserAccountId(chatId, (session.withdrawSite || '').toLowerCase(), uid);
         session.step = null;
         this.showWithdrawInstructions(chatId);
       }
@@ -907,17 +970,39 @@ export class BotService implements OnModuleInit {
       if (msg.text) {
         session.withdrawCode = msg.text.trim(); session.step = null;
         const lang = this.getLang(chatId) || 'ru';
+        // Группага жазуу (record)
         this.sendWithdrawToGroup(chatId, msg);
-        this.bot.sendMessage(chatId,
-          this.t(lang, 'wd_accepted', session.withdrawSite || '—', session.withdrawUserId || '—', session.withdrawBank || '—', session.withdrawPhone || '—', session.withdrawCode),
-          { parse_mode: 'HTML', reply_markup: { inline_keyboard: [[{ text: this.t(lang, 'btn_main'), callback_data: 'main_menu' }]] } });
+        // API аркылуу автоматтык выплата
+        if (this.cashdesk.enabled()) {
+          try {
+            const r = await this.cashdesk.payout(session.withdrawUserId, session.withdrawCode);
+            const j = r.json || {};
+            const ok = j.Success === true || j.success === true;
+            if (ok) {
+              const summa = j.Summa ?? j.summa ?? '';
+              this.bot.sendMessage(chatId, this.t(lang, 'payout_ok', String(summa)), { parse_mode: 'HTML', reply_markup: { inline_keyboard: [[{ text: this.t(lang, 'btn_main'), callback_data: 'main_menu' }]] } });
+            } else {
+              const m = j.Message || j.message || `HTTP ${r.status}`;
+              this.bot.sendMessage(chatId, this.t(lang, 'payout_failed', String(m).slice(0, 150)), { parse_mode: 'HTML', reply_markup: { inline_keyboard: [[{ text: this.t(lang, 'btn_main'), callback_data: 'main_menu' }]] } });
+            }
+          } catch (e: any) {
+            this.bot.sendMessage(chatId, this.t(lang, 'payout_failed', e.message), { parse_mode: 'HTML', reply_markup: { inline_keyboard: [[{ text: this.t(lang, 'btn_main'), callback_data: 'main_menu' }]] } });
+          }
+        } else {
+          this.bot.sendMessage(chatId,
+            this.t(lang, 'wd_accepted', session.withdrawSite || '—', session.withdrawUserId || '—', session.withdrawBank || '—', session.withdrawPhone || '—', session.withdrawCode),
+            { parse_mode: 'HTML', reply_markup: { inline_keyboard: [[{ text: this.t(lang, 'btn_main'), callback_data: 'main_menu' }]] } });
+        }
       }
       return;
     }
     if (session.step === 'waiting_id') {
       if (msg.text) {
-        session.userId = msg.text.trim();
-        this.storage.saveUserAccountId(chatId, session.site, session.userId);
+        const uid = msg.text.trim();
+        const v = await this.verifyPlayer(uid);
+        if (!v.ok) { this.bot.sendMessage(chatId, this.t(this.getLang(chatId) || 'ru', 'id_not_found'), { parse_mode: 'HTML' }); return; }
+        session.userId = uid;
+        this.storage.saveUserAccountId(chatId, session.site, uid);
         session.step = null;
         this.askForAmount(chatId);
       }
