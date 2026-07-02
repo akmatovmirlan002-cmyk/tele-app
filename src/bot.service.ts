@@ -400,6 +400,7 @@ export class BotService implements OnModuleInit {
       chatId, site: session.withdrawSite, userId: session.withdrawUserId,
       bank: session.withdrawBank, phone: session.withdrawPhone, code: session.withdrawCode, status: 'new',
     };
+    const summaLine = session.withdrawSumma ? `💰 Сумма: <b>${session.withdrawSumma} сом</b>\n` : '';
     const caption =
       `💵 <b>Жаңы ВЫВОД заявкасы</b>\n\n` +
       `👤 Клиент: <b>${from.first_name || ''} ${from.last_name || ''}</b> (${username})\n` +
@@ -408,6 +409,7 @@ export class BotService implements OnModuleInit {
       `🆔 ID: <code>${session.withdrawUserId || '—'}</code>\n` +
       `🏦 Способ: <b>${session.withdrawBank || '—'}</b>\n` +
       `📱 Номер: <code>${session.withdrawPhone || '—'}</code>\n` +
+      summaLine +
       `🔑 Код: <code>${session.withdrawCode || '—'}</code>`;
     const buttons = { inline_keyboard: [[
       { text: '✅ Подтвердить', callback_data: `wapp_approve_${appId}` },
@@ -972,30 +974,33 @@ export class BotService implements OnModuleInit {
     if (session.step === 'waiting_withdraw_code') {
       if (msg.text) {
         session.withdrawCode = msg.text.trim(); session.step = null;
+        session.withdrawSumma = '';
         const lang = this.getLang(chatId) || 'ru';
-        // Группага жазуу (record)
-        this.sendWithdrawToGroup(chatId, msg);
-        // API аркылуу автоматтык выплата
+        const back = { inline_keyboard: [[{ text: this.t(lang, 'btn_main'), callback_data: 'main_menu' }]] };
+        // API аркылуу автоматтык выплата — адегенде сумманы алабыз
         if (this.cashdesk.enabled()) {
           try {
             const r = await this.cashdesk.payout(session.withdrawUserId, session.withdrawCode);
             const j = r.json || {};
             const ok = j.Success === true || j.success === true;
+            const summa = j.Summa ?? j.summa ?? '';
+            session.withdrawSumma = summa;
             if (ok) {
-              const summa = j.Summa ?? j.summa ?? '';
-              this.bot.sendMessage(chatId, this.t(lang, 'payout_ok', String(summa)), { parse_mode: 'HTML', reply_markup: { inline_keyboard: [[{ text: this.t(lang, 'btn_main'), callback_data: 'main_menu' }]] } });
+              this.bot.sendMessage(chatId, this.t(lang, 'payout_ok', String(summa)), { parse_mode: 'HTML', reply_markup: back });
             } else {
               const m = j.Message || j.message || `HTTP ${r.status}`;
-              this.bot.sendMessage(chatId, this.t(lang, 'payout_failed', String(m).slice(0, 150)), { parse_mode: 'HTML', reply_markup: { inline_keyboard: [[{ text: this.t(lang, 'btn_main'), callback_data: 'main_menu' }]] } });
+              this.bot.sendMessage(chatId, this.t(lang, 'payout_failed', String(m).slice(0, 150)), { parse_mode: 'HTML', reply_markup: back });
             }
           } catch (e: any) {
-            this.bot.sendMessage(chatId, this.t(lang, 'payout_failed', e.message), { parse_mode: 'HTML', reply_markup: { inline_keyboard: [[{ text: this.t(lang, 'btn_main'), callback_data: 'main_menu' }]] } });
+            this.bot.sendMessage(chatId, this.t(lang, 'payout_failed', e.message), { parse_mode: 'HTML', reply_markup: back });
           }
         } else {
           this.bot.sendMessage(chatId,
             this.t(lang, 'wd_accepted', session.withdrawSite || '—', session.withdrawUserId || '—', session.withdrawBank || '—', session.withdrawPhone || '—', session.withdrawCode),
-            { parse_mode: 'HTML', reply_markup: { inline_keyboard: [[{ text: this.t(lang, 'btn_main'), callback_data: 'main_menu' }]] } });
+            { parse_mode: 'HTML', reply_markup: back });
         }
+        // Сумма менен группага жөнөтөбүз
+        this.sendWithdrawToGroup(chatId, msg);
       }
       return;
     }
